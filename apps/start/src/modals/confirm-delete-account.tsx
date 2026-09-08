@@ -19,8 +19,8 @@ export default function ConfirmDeleteAccount() {
       onError: handleError,
       onSuccess: () => {
         toast.success('Your account has been deleted');
-        // The session is now gone server-side; send the user back to the start.
-        window.location.href = '/';
+        // `noredirect` so AUTH_AUTO_REDIRECT doesn't recreate the account.
+        window.location.href = '/login?noredirect=1';
       },
     }),
   );

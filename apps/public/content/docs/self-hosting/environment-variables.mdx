@@ -560,6 +560,142 @@ Secret for signing Slack OAuth state parameter.
 SLACK_STATE_SECRET=your-state-secret
 ```
 
+## Single sign-on (OIDC)
+
+OpenPanel also support any standard OIDC provider. Fill in the env vars below to set it up.
+
+When configured a new "Sign in with ..." button will appear on the login screen.
+
+### OIDC_CLIENT_ID
+
+**Type**: `string`
+**Required**: No
+**Default**: None
+
+Client ID from your identity provider. Setting it enables the SSO button.
+
+**Example**:
+```bash
+OIDC_CLIENT_ID=openpanel
+```
+
+### OIDC_CLIENT_SECRET
+
+**Type**: `string`
+**Required**: Yes, when `OIDC_CLIENT_ID` is set
+**Default**: None
+
+Client secret from your identity provider.
+
+**Example**:
+```bash
+OIDC_CLIENT_SECRET=your-client-secret
+```
+
+### OIDC_REDIRECT_URI
+
+**Type**: `string`
+**Required**: Yes, when `OIDC_CLIENT_ID` is set
+**Default**: None
+
+Where the provider sends the user back. Must be `{API_URL}/oauth/oidc/callback`,
+and must be registered as a valid redirect URI on the provider side.
+
+**Example**:
+```bash
+OIDC_REDIRECT_URI=https://analytics.example.com/api/oauth/oidc/callback
+```
+
+### OIDC_AUTHORIZATION_ENDPOINT
+
+**Type**: `string`
+**Required**: Yes, when `OIDC_CLIENT_ID` is set
+**Default**: None
+
+The provider's authorization endpoint. The **browser** opens this, so it has to
+be an address your users can reach.
+
+**Example**:
+```bash
+OIDC_AUTHORIZATION_ENDPOINT=https://auth.example.com/realms/main/protocol/openid-connect/auth
+```
+
+### OIDC_TOKEN_ENDPOINT
+
+**Type**: `string`
+**Required**: Yes, when `OIDC_CLIENT_ID` is set
+**Default**: None
+
+The provider's token endpoint. The **API container** calls this, so an internal
+address is fine and often preferable.
+
+**Example**:
+```bash
+OIDC_TOKEN_ENDPOINT=http://keycloak:8080/realms/main/protocol/openid-connect/token
+```
+
+### OIDC_USERINFO_ENDPOINT
+
+**Type**: `string`
+**Required**: Yes, when `OIDC_CLIENT_ID` is set
+**Default**: None
+
+The provider's userinfo endpoint, also called by the API container. OpenPanel
+reads `sub`, `email`, `name`, `given_name` and `family_name` from the top level
+of the response.
+
+**Example**:
+```bash
+OIDC_USERINFO_ENDPOINT=http://keycloak:8080/realms/main/protocol/openid-connect/userinfo
+```
+
+### OIDC_SCOPES
+
+**Type**: `string`
+**Required**: No
+**Default**: `openid profile email`
+
+Space-separated scopes to request. Set it to an empty string on OAuth2-only
+servers that reject the `openid` scope.
+
+**Example**:
+```bash
+OIDC_SCOPES="openid profile email groups"
+```
+
+### OIDC_NAME
+
+**Type**: `string`
+**Required**: No
+**Default**: `SSO`
+
+Label for the login button, rendered as "Sign in with {name}".
+
+**Example**:
+```bash
+OIDC_NAME=Keycloak
+```
+
+### AUTH_AUTO_REDIRECT
+
+**Type**: `boolean`
+**Required**: No
+**Default**: `false`
+
+Send `/login` straight to the provider instead of showing a single lone button.
+Only applies when exactly one login provider is configured; otherwise the login
+page renders normally and a warning is logged at startup.
+
+**Example**:
+```bash
+AUTH_AUTO_REDIRECT=true
+```
+
+<Callout>
+`/login?noredirect=1` always renders the normal login page.
+Logging out and deleting an account would send user to this url, so that login doesn't start automatically if `AUTH_AUTO_REDIRECT` is on.
+</Callout>
+
 ## Self-hosting
 
 ### SELF_HOSTED

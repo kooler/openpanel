@@ -6,7 +6,8 @@ export function useLogout() {
   const signOut = useMutation(
     trpc.auth.signOut.mutationOptions({
       onSuccess() {
-        window.location.href = '/';
+        // `noredirect` so AUTH_AUTO_REDIRECT doesn't sign them back in.
+        window.location.href = '/login?noredirect=1';
       },
     }),
   );

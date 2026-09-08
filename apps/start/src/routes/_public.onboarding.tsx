@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { Or } from '@/components/auth/or';
 import { SignInGithub } from '@/components/auth/sign-in-github';
 import { SignInGoogle } from '@/components/auth/sign-in-google';
+import { SignInOidc } from '@/components/auth/sign-in-oidc';
 import { SignUpEmailForm } from '@/components/auth/sign-up-email-form';
 import FullPageLoadingState from '@/components/full-page-loading-state';
 import { useTRPC } from '@/integrations/trpc/react';
@@ -29,6 +30,9 @@ export const Route = createFileRoute('/_public/onboarding')({
   validateSearch,
   loader: async ({ context, location }) => {
     const search = validateSearch.safeParse(location.search);
+    await context.queryClient.prefetchQuery(
+      context.trpc.auth.authProviders.queryOptions()
+    );
     if (search.success && search.data.inviteId) {
       await context.queryClient.prefetchQuery(
         context.trpc.organization.getInvite.queryOptions({
@@ -52,6 +56,12 @@ function Component() {
         enabled: !!inviteId,
       }
     )
+  );
+  const { data: providers } = useQuery(
+    trpc.auth.authProviders.queryOptions()
+  );
+  const hasOAuthProviders = Boolean(
+    providers?.google || providers?.github || providers?.oidc
   );
   return (
     <div className="col w-full gap-8 py-4 text-left">
@@ -119,15 +129,28 @@ function Component() {
       )}
 
       <div className="space-y-6">
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-          <SignInGithub inviteId={inviteId} type="sign-up" />
-          <SignInGoogle inviteId={inviteId} type="sign-up" />
-        </div>
+        {hasOAuthProviders && (
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            {providers?.github && (
+              <SignInGithub inviteId={inviteId} type="sign-up" />
+            )}
+            {providers?.google && (
+              <SignInGoogle inviteId={inviteId} type="sign-up" />
+            )}
+            {providers?.oidc && (
+              <SignInOidc
+                inviteId={inviteId}
+                name={providers.oidc.name}
+                type="sign-up"
+              />
+            )}
+          </div>
+        )}
         <p className="text-center text-muted-foreground text-xs">
           No credit card required · Free 30-day trial · Cancel anytime
         </p>
 
-        <Or className="my-6" />
+        {hasOAuthProviders && <Or className="my-6" />}
 
         <div className="mb-4 flex items-center gap-2 font-semibold text-lg">
           <MailIcon className="size-4" />
