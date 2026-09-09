@@ -15,6 +15,7 @@ const {
   setSessionTokenCookieMock,
   validateAuthorizationCodeMock,
   getIsRegistrationAllowedMock,
+  cookieOptions,
 } = vi.hoisted(() => ({
   accountFindFirst: vi.fn(),
   userCreate: vi.fn(),
@@ -23,10 +24,18 @@ const {
   setSessionTokenCookieMock: vi.fn(),
   validateAuthorizationCodeMock: vi.fn(),
   getIsRegistrationAllowedMock: vi.fn(),
+  cookieOptions: {
+    domain: undefined,
+    secure: false,
+    sameSite: 'lax',
+    httpOnly: true,
+    path: '/',
+  },
 }));
 
 vi.mock('@openpanel/auth', () => ({
   Arctic: { decodeIdToken: vi.fn() },
+  COOKIE_OPTIONS: cookieOptions,
   createSession: createSessionMock,
   generateSessionToken: () => 'session-token',
   github: {},
@@ -61,14 +70,15 @@ const { mapOidcUser, oidcCallback } = await import(
 
 function makeReply() {
   const redirect = vi.fn();
+  const clearCookie = vi.fn();
   const reply = {
     redirect,
-    clearCookie: vi.fn(),
+    clearCookie,
     setCookie: vi.fn(),
     log: { error: vi.fn() },
     request: { id: 'req-1' },
   };
-  return { reply: reply as unknown as FastifyReply, redirect };
+  return { reply: reply as unknown as FastifyReply, redirect, clearCookie };
 }
 
 function makeReq(cookies: Record<string, string> = {}) {
@@ -88,6 +98,12 @@ function userInfoResponse(body: unknown) {
     ok: true,
     json: () => Promise.resolve(body),
   } as unknown as Response;
+}
+
+function stubUserInfo(body: unknown) {
+  const fetchMock = vi.fn().mockResolvedValue(userInfoResponse(body));
+  vi.stubGlobal('fetch', fetchMock);
+  return fetchMock;
 }
 
 function redirectedError(redirect: ReturnType<typeof vi.fn>) {
@@ -279,5 +295,74 @@ describe('oidcCallback', () => {
         }),
       })
     );
+  });
+
+  it('creates the user, the session and the session cookie for a new subject', async () => {
+    stubUserInfo({ sub: 'sub-1', email: 'ada@example.com' });
+    const { reply, redirect } = makeReply();
+
+    await oidcCallback(makeReq(), reply);
+
+    expect(userCreate).toHaveBeenCalledWith({
+      data: {
+        email: 'ada@example.com',
+        firstName: 'ada',
+        lastName: '',
+        accounts: { create: { provider: 'oidc', providerId: 'sub-1' } },
+      },
+    });
+    expect(createSessionMock).toHaveBeenCalledWith('session-token', 'user-1');
+    expect(setSessionTokenCookieMock).toHaveBeenCalled();
+    expect(redirect).toHaveBeenCalledWith('http://localhost:3000');
+  });
+
+  it('signs a known subject in without creating a second user', async () => {
+    accountFindFirst.mockResolvedValue({ id: 'account-1', userId: 'user-9' });
+    stubUserInfo({ sub: 'sub-1', email: 'ada@example.com' });
+    const { reply, redirect } = makeReply();
+
+    await oidcCallback(makeReq(), reply);
+
+    expect(userCreate).not.toHaveBeenCalled();
+    expect(createSessionMock).toHaveBeenCalledWith('session-token', 'user-9');
+    expect(setSessionTokenCookieMock).toHaveBeenCalled();
+    expect(redirect).toHaveBeenCalledWith('http://localhost:3000');
+  });
+
+  it('refuses a new subject whose email already belongs to another login method', async () => {
+    userFindFirst.mockResolvedValue({ id: 'user-9', email: 'ada@example.com' });
+    stubUserInfo({ sub: 'sub-1', email: 'ada@example.com' });
+    const { reply, redirect } = makeReply();
+
+    await oidcCallback(makeReq(), reply);
+
+    expect(userCreate).not.toHaveBeenCalled();
+    expect(setSessionTokenCookieMock).not.toHaveBeenCalled();
+    expect(redirectedError(redirect).error).toMatch(/original authentication/i);
+  });
+
+  it('creates no user when registration is closed', async () => {
+    getIsRegistrationAllowedMock.mockResolvedValue(false);
+    stubUserInfo({ sub: 'sub-1', email: 'ada@example.com' });
+    const { reply, redirect } = makeReply();
+
+    await oidcCallback(makeReq(), reply);
+
+    expect(userCreate).not.toHaveBeenCalled();
+    expect(setSessionTokenCookieMock).not.toHaveBeenCalled();
+    expect(redirectedError(redirect).error).toMatch(/not allowed/i);
+  });
+
+  it('clears the state and verifier cookies with the options they were set with', async () => {
+    stubUserInfo({ sub: 'sub-1', email: 'ada@example.com' });
+    const { reply, clearCookie } = makeReply();
+
+    await oidcCallback(makeReq(), reply);
+
+    expect(clearCookie).toHaveBeenCalledWith(
+      'oidc_code_verifier',
+      cookieOptions
+    );
+    expect(clearCookie).toHaveBeenCalledWith('oidc_oauth_state', cookieOptions);
   });
 });

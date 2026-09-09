@@ -30,16 +30,17 @@ export const Route = createFileRoute('/_public/onboarding')({
   validateSearch,
   loader: async ({ context, location }) => {
     const search = validateSearch.safeParse(location.search);
-    await context.queryClient.prefetchQuery(
-      context.trpc.auth.authProviders.queryOptions()
-    );
-    if (search.success && search.data.inviteId) {
-      await context.queryClient.prefetchQuery(
-        context.trpc.organization.getInvite.queryOptions({
-          inviteId: search.data.inviteId,
-        })
-      );
-    }
+    const inviteId = search.success ? search.data.inviteId : undefined;
+    await Promise.all([
+      context.queryClient.prefetchQuery(
+        context.trpc.auth.authProviders.queryOptions()
+      ),
+      inviteId
+        ? context.queryClient.prefetchQuery(
+            context.trpc.organization.getInvite.queryOptions({ inviteId })
+          )
+        : null,
+    ]);
   },
   pendingComponent: FullPageLoadingState,
 });
