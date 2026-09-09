@@ -9,11 +9,14 @@ import {
   generateRecoveryCodes,
   generateSessionToken,
   generateTotpSecret,
+  getConfiguredAuthProviders,
   github,
   google,
   hashPassword,
   hashRecoveryCodes,
   invalidateSession,
+  oidc,
+  oidcConfig,
   setLastAuthProviderCookie,
   setSessionTokenCookie,
   validateSessionToken,
@@ -53,7 +56,7 @@ const TWO_FACTOR_COOKIE = '2fa_challenge';
 const TWO_FACTOR_CHALLENGE_TTL_SECONDS = 5 * 60;
 const INVITE_COOKIE = 'inviteId';
 
-const zProvider = z.enum(['email', 'google', 'github']);
+const zProvider = z.enum(['email', 'google', 'github', 'oidc']);
 
 /**
  * Best-effort consumption of an invite for a user that just authenticated.
@@ -116,6 +119,34 @@ export const authRouter = createTRPCRouter({
         };
       }
 
+      if (provider === 'oidc') {
+        if (!(oidc && oidcConfig)) {
+          throw new TRPCNotFoundError('OIDC login is not configured');
+        }
+
+        const state = Arctic.generateState();
+        const codeVerifier = Arctic.generateCodeVerifier();
+        const url = oidc.createAuthorizationURLWithPKCE(
+          oidcConfig.authorizationEndpoint,
+          state,
+          Arctic.CodeChallengeMethod.S256,
+          codeVerifier,
+          oidcConfig.scopes
+        );
+
+        ctx.setCookie('oidc_oauth_state', state, {
+          maxAge: 60 * 10,
+        });
+        ctx.setCookie('oidc_code_verifier', codeVerifier, {
+          maxAge: 60 * 10,
+        });
+
+        return {
+          type: 'oidc',
+          url: url.toString(),
+        };
+      }
+
       const state = Arctic.generateState();
       const codeVerifier = Arctic.generateCodeVerifier();
       const url = google.createAuthorizationURL(state, codeVerifier, [
@@ -136,6 +167,7 @@ export const authRouter = createTRPCRouter({
         url: url.toString(),
       };
     }),
+  authProviders: publicProcedure.query(() => getConfiguredAuthProviders()),
   signUpEmail: publicProcedure
     .use(
       rateLimitMiddleware({

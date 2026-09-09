@@ -1,10 +1,13 @@
 import {
   Arctic,
+  COOKIE_OPTIONS,
   createSession,
   generateSessionToken,
   github,
   google,
   type OAuth2Tokens,
+  oidc,
+  oidcConfig,
   setLastAuthProviderCookie,
   setSessionTokenCookie,
 } from '@openpanel/auth';
@@ -45,7 +48,10 @@ async function getGithubEmail(githubAccessToken: string) {
 }
 
 // New types and interfaces
-type Provider = 'github' | 'google';
+type Provider = 'github' | 'google' | 'oidc';
+
+// Providers that carry a `<provider>_code_verifier` cookie into the callback.
+const PKCE_PROVIDERS = new Set<Provider>(['google', 'oidc']);
 interface OAuthUser {
   id: string;
   email: string;
@@ -260,6 +266,80 @@ async function fetchGoogleUser(tokens: OAuth2Tokens): Promise<OAuthUser> {
   };
 }
 
+const oidcUserInfoSchema = z.object({
+  sub: z.string().min(1),
+  email: z.string().min(1),
+  // Unknown because some providers (Cognito) send this as a string.
+  email_verified: z.unknown().optional(),
+  name: z.string().nullish(),
+  given_name: z.string().nullish(),
+  family_name: z.string().nullish(),
+});
+
+/** Only an explicit false rejects a login; anything else counts as absent. */
+function isEmailExplicitlyUnverified(claim: unknown): boolean {
+  return claim === false || claim === 'false';
+}
+
+/**
+ * Claims come from userinfo rather than the id_token: a compliant server may
+ * put only `sub` in the token, which would then need a merge step.
+ */
+export function mapOidcUser(payload: unknown): OAuthUser {
+  const result = oidcUserInfoSchema.safeParse(payload);
+  if (!result.success) {
+    // Field names only: the userinfo body must not reach the logs.
+    throw new LogError('Invalid userinfo response from the login provider', {
+      fieldErrors: result.error.flatten().fieldErrors,
+    });
+  }
+
+  const claims = result.data;
+
+  // An unverified email is an account-takeover vector, so refuse outright.
+  if (isEmailExplicitlyUnverified(claims.email_verified)) {
+    throw new LogError('Your login provider has not verified this email');
+  }
+
+  const emailLocalPart = claims.email.split('@')[0];
+
+  return {
+    id: claims.sub,
+    email: claims.email,
+    firstName:
+      claims.given_name || claims.name || emailLocalPart || claims.email,
+    lastName: claims.family_name || '',
+  };
+}
+
+async function fetchOidcUser(accessToken: string): Promise<OAuthUser> {
+  if (!oidcConfig) {
+    throw new LogError('OIDC login is not configured');
+  }
+
+  const response = await fetch(oidcConfig.userinfoEndpoint, {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      Accept: 'application/json',
+    },
+  });
+
+  if (!response.ok) {
+    throw new LogError('Could not reach the login provider', {
+      status: response.status,
+    });
+  }
+
+  let payload: unknown;
+  try {
+    payload = await response.json();
+  } catch {
+    throw new LogError('The login provider returned an invalid response');
+  }
+
+  return mapOidcUser(payload);
+}
+
 interface ValidatedOAuthQuery {
   code: string;
   state: string;
@@ -285,20 +365,22 @@ async function validateOAuthCallback(
 
   const { code, state } = query.data;
   const storedState = req.cookies[`${provider}_oauth_state`] ?? null;
-  const codeVerifier =
-    provider === 'google' ? (req.cookies.google_code_verifier ?? null) : null;
+  const usesPkce = PKCE_PROVIDERS.has(provider);
+  const codeVerifier = usesPkce
+    ? (req.cookies[`${provider}_code_verifier`] ?? null)
+    : null;
 
   if (
     code === null ||
     state === null ||
     storedState === null ||
-    (provider === 'google' && codeVerifier === null)
+    (usesPkce && codeVerifier === null)
   ) {
     throw new LogError('Missing oauth parameters', {
       code: code === null,
       state: state === null,
       storedState: storedState === null,
-      codeVerifier: provider === 'google' ? codeVerifier === null : undefined,
+      codeVerifier: usesPkce ? codeVerifier === null : undefined,
       provider,
     });
   }
@@ -392,6 +474,54 @@ export async function googleCallback(req: FastifyRequest, reply: FastifyReply) {
     return await handleNewUser({
       oauthUser: googleUser,
       providerName: 'google',
+      inviteId,
+      reply,
+    });
+  } catch (error) {
+    req.log.error(error);
+    return redirectWithError(reply, error);
+  }
+}
+
+export async function oidcCallback(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    if (!(oidc && oidcConfig)) {
+      throw new LogError('OIDC login is not configured');
+    }
+
+    const { code } = await validateOAuthCallback(req, 'oidc');
+    const inviteId = req.cookies.inviteId;
+    const codeVerifier = req.cookies.oidc_code_verifier!;
+    const tokens = await oidc.validateAuthorizationCode(
+      oidcConfig.tokenEndpoint,
+      code,
+      codeVerifier
+    );
+    const oidcUser = await fetchOidcUser(tokens.accessToken());
+
+    // Subject only, never email: matching on email would hand an account to
+    // anyone who can get the IdP to issue them that address.
+    const account = await db.account.findFirst({
+      where: { provider: 'oidc', providerId: oidcUser.id },
+    });
+
+    // Must match the options they were set with, or the clear misses them.
+    reply.clearCookie('oidc_code_verifier', COOKIE_OPTIONS);
+    reply.clearCookie('oidc_oauth_state', COOKIE_OPTIONS);
+
+    if (account) {
+      return await handleExistingUser({
+        account,
+        oauthUser: oidcUser,
+        providerName: 'oidc',
+        inviteId,
+        reply,
+      });
+    }
+
+    return await handleNewUser({
+      oauthUser: oidcUser,
+      providerName: 'oidc',
       inviteId,
       reply,
     });

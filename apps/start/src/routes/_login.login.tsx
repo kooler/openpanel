@@ -1,12 +1,16 @@
+import { useMutation, useQuery } from '@tanstack/react-query';
 import { createFileRoute } from '@tanstack/react-router';
 import { AlertCircle } from 'lucide-react';
+import { useEffect, useRef } from 'react';
 import { z } from 'zod';
 import { Or } from '@/components/auth/or';
 import { SignInEmailForm } from '@/components/auth/sign-in-email-form';
 import { SignInGithub } from '@/components/auth/sign-in-github';
 import { SignInGoogle } from '@/components/auth/sign-in-google';
+import { SignInOidc } from '@/components/auth/sign-in-oidc';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { useCookieStore } from '@/hooks/use-cookie-store';
+import { useTRPC } from '@/integrations/trpc/react';
 import { createTitle, PAGE_TITLES } from '@/utils/title';
 
 export const Route = createFileRoute('/_login/login')({
@@ -21,14 +25,51 @@ export const Route = createFileRoute('/_login/login')({
     error: z.string().optional(),
     correlationId: z.string().optional(),
     inviteId: z.string().optional(),
+    noredirect: z.unknown().optional(),
   }),
+  loader: async ({ context }) => {
+    await context.queryClient.prefetchQuery(
+      context.trpc.auth.authProviders.queryOptions()
+    );
+  },
 });
 
 function LoginPage() {
-  const { error, correlationId, inviteId } = Route.useSearch();
+  const { error, correlationId, inviteId, noredirect } = Route.useSearch();
+  const trpc = useTRPC();
   const [lastProvider] = useCookieStore<null | string>(
     'last-auth-provider',
     null
+  );
+  const { data: providers } = useQuery(
+    trpc.auth.authProviders.queryOptions()
+  );
+  const signInOAuth = useMutation(
+    trpc.auth.signInOAuth.mutationOptions({
+      onSuccess(res) {
+        if (res.url) {
+          window.location.href = res.url;
+        }
+      },
+    })
+  );
+
+  const autoRedirect = providers?.autoRedirect ?? null;
+  // A failed login must not bounce back to the provider, or it loops.
+  const skipAutoRedirect = error !== undefined || noredirect !== undefined;
+  const hasStartedRedirect = useRef(false);
+  const startRedirect = signInOAuth.mutate;
+
+  useEffect(() => {
+    if (!autoRedirect || skipAutoRedirect || hasStartedRedirect.current) {
+      return;
+    }
+    hasStartedRedirect.current = true;
+    startRedirect({ provider: autoRedirect, inviteId });
+  }, [autoRedirect, skipAutoRedirect, inviteId, startRedirect]);
+
+  const hasOAuthProviders = Boolean(
+    providers?.google || providers?.github || providers?.oidc
   );
 
   return (
@@ -72,19 +113,35 @@ function LoginPage() {
         </Alert>
       )}
 
-      <div className="space-y-4">
-        <SignInGoogle
-          inviteId={inviteId}
-          isLastUsed={lastProvider === 'google'}
-          type="sign-in"
-        />
-        <SignInGithub
-          inviteId={inviteId}
-          isLastUsed={lastProvider === 'github'}
-          type="sign-in"
-        />
-      </div>
-      <Or />
+      {hasOAuthProviders && (
+        <>
+          <div className="space-y-4">
+            {providers?.google && (
+              <SignInGoogle
+                inviteId={inviteId}
+                isLastUsed={lastProvider === 'google'}
+                type="sign-in"
+              />
+            )}
+            {providers?.github && (
+              <SignInGithub
+                inviteId={inviteId}
+                isLastUsed={lastProvider === 'github'}
+                type="sign-in"
+              />
+            )}
+            {providers?.oidc && (
+              <SignInOidc
+                inviteId={inviteId}
+                isLastUsed={lastProvider === 'oidc'}
+                name={providers.oidc.name}
+                type="sign-in"
+              />
+            )}
+          </div>
+          <Or />
+        </>
+      )}
       <SignInEmailForm inviteId={inviteId} isLastUsed={lastProvider === 'email'} />
     </div>
   );

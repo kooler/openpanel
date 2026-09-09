@@ -3,6 +3,7 @@ process.env.TZ = 'UTC';
 
 import './utils/observability';
 
+import { getAuthProviderWarnings } from '@openpanel/auth';
 import { rawStderrWrite } from '@openpanel/logger';
 import sourceMapSupport from 'source-map-support';
 import { buildApp } from './app';
@@ -19,6 +20,9 @@ const host =
 
 const startServer = async () => {
   logger.info('Starting server');
+  for (const warning of getAuthProviderWarnings()) {
+    logger.warn(warning);
+  }
   try {
     const fastify = await buildApp();
 
